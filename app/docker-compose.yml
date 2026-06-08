@@ -1,0 +1,226 @@
+services:
+  vllm:
+    image: ${VLLM_IMAGE}
+    restart: unless-stopped
+    ipc: host
+    gpus: all
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --model
+      - ${VLLM_MODEL}
+      - --served-model-name
+      - ${VLLM_MODEL}
+      - --max-model-len
+      - ${VLLM_MAX_MODEL_LEN}
+      - --gpu-memory-utilization
+      - "0.95"
+      - --max-num-seqs
+      - "1"
+      - --kv-cache-dtype
+      - fp8
+      - --limit-mm-per-prompt
+      - '{"image": 1, "audio": 0}'
+      - --speculative-config
+      - ${VLLM_SPECULATIVE_CONFIG}
+      - --api-key
+      - ${VLLM_API_KEY}
+      - --trust-remote-code
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - gemma4
+      - --reasoning-parser
+      - gemma4
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+      - ./data/hf-cache:/root/.cache/huggingface
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/health\", timeout=5)'"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+
+  librechat:
+    image: ${LIBRECHAT_IMAGE}
+    restart: unless-stopped
+    depends_on:
+      - mongodb
+      - meilisearch
+      - vllm
+      - searxng
+      - firecrawl-api
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3080
+      NODE_ENV: production
+      DOMAIN_CLIENT: http://localhost:3080
+      DOMAIN_SERVER: http://localhost:3080
+      MONGO_URI: mongodb://mongodb:27017/LibreChat
+      MEILI_HOST: http://meilisearch:7700
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      CONFIG_PATH: /app/librechat.yaml
+      CREDS_KEY: ${CREDS_KEY}
+      CREDS_IV: ${CREDS_IV}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      ALLOW_EMAIL_LOGIN: "true"
+      ALLOW_REGISTRATION: "true"
+      ALLOW_SOCIAL_LOGIN: "false"
+      OPENAI_API_KEY: user_provided
+      VLLM_API_KEY: ${VLLM_API_KEY}
+      SEARXNG_INSTANCE_URL: http://searxng:8080
+      SEARXNG_API_KEY: ""
+      FIRECRAWL_API_URL: http://firecrawl-api:3002
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY}
+      FIRECRAWL_VERSION: v1
+    volumes:
+      - ./librechat.yaml:/app/librechat.yaml:ro
+      - ./data/librechat:/app/client/public/images
+      - ./data/uploads:/app/uploads
+    ports:
+      - "127.0.0.1:3080:3080"
+
+  open-webui:
+    image: ${OPEN_WEBUI_IMAGE}
+    restart: unless-stopped
+    depends_on:
+      - vllm
+      - searxng
+    environment:
+      WEBUI_URL: http://localhost:3000
+      WEBUI_AUTH: "true"
+      ENABLE_SIGNUP: "true"
+      ENABLE_LOGIN_FORM: "true"
+      ENABLE_OPENAI_API: "true"
+      OPENAI_API_BASE_URL: http://vllm:8000/v1
+      OPENAI_API_KEY: ${VLLM_API_KEY}
+      ENABLE_OLLAMA_API: "false"
+      ENABLE_WEB_SEARCH: "true"
+      WEB_SEARCH_ENGINE: searxng
+      WEB_SEARCH_RESULT_COUNT: 3
+      WEB_SEARCH_CONCURRENT_REQUESTS: 4
+      SEARXNG_QUERY_URL: http://searxng:8080/search?q=<query>
+      ENABLE_CODE_EXECUTION: "true"
+      CODE_EXECUTION_ENGINE: pyodide
+      ENABLE_CODE_INTERPRETER: "true"
+      CODE_INTERPRETER_ENGINE: pyodide
+    volumes:
+      - ./data/open-webui:/app/backend/data
+    ports:
+      - "127.0.0.1:3000:8080"
+
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET_KEY}
+    volumes:
+      - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- 'http://127.0.0.1:8080/search?q=test&format=json' >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+
+  firecrawl-api:
+    image: ghcr.io/firecrawl/firecrawl:latest
+    restart: unless-stopped
+    depends_on:
+      firecrawl-redis:
+        condition: service_started
+      firecrawl-playwright:
+        condition: service_started
+      firecrawl-rabbitmq:
+        condition: service_healthy
+      firecrawl-postgres:
+        condition: service_started
+      searxng:
+        condition: service_started
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3002
+      USE_DB_AUTHENTICATION: "false"
+      BULL_AUTH_KEY: ${FIRECRAWL_BULL_AUTH_KEY}
+      REDIS_URL: redis://firecrawl-redis:6379
+      REDIS_RATE_LIMIT_URL: redis://firecrawl-redis:6379
+      PLAYWRIGHT_MICROSERVICE_URL: http://firecrawl-playwright:3000/scrape
+      NUQ_RABBITMQ_URL: amqp://firecrawl-rabbitmq:5672
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${FIRECRAWL_POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+      POSTGRES_HOST: firecrawl-postgres
+      POSTGRES_PORT: 5432
+      SEARXNG_ENDPOINT: http://searxng:8080
+      NUM_WORKERS_PER_QUEUE: 2
+      CRAWL_CONCURRENT_REQUESTS: 2
+      MAX_CONCURRENT_JOBS: 2
+      BROWSER_POOL_SIZE: 2
+      ENV: local
+    command: node dist/src/harness.js --start-docker
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3002').then(() => process.exit(0)).catch(() => process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+
+  firecrawl-playwright:
+    image: ghcr.io/firecrawl/playwright-service:latest
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      MAX_CONCURRENT_PAGES: 2
+      BLOCK_MEDIA: "true"
+    tmpfs:
+      - /tmp/.cache:noexec,nosuid,size=1g
+
+  firecrawl-redis:
+    image: redis:alpine
+    restart: unless-stopped
+    command: redis-server --bind 0.0.0.0
+
+  firecrawl-rabbitmq:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  firecrawl-postgres:
+    image: ghcr.io/firecrawl/nuq-postgres:latest
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${FIRECRAWL_POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+    volumes:
+      - firecrawl-postgres:/var/lib/postgresql/data
+
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongodb:/data/db
+    command: mongod --noauth
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.13
+    restart: unless-stopped
+    environment:
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+    volumes:
+      - meilisearch:/meili_data
+
+volumes:
+  mongodb:
+  meilisearch:
+  firecrawl-postgres:

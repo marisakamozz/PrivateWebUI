@@ -1,0 +1,48 @@
+version: 1.2.8
+
+cache: true
+
+interface:
+  webSearch: true
+
+registration:
+  socialLogins: []
+
+webSearch:
+  searchProvider: "searxng"
+  searxngInstanceUrl: "${SEARXNG_INSTANCE_URL}"
+  searxngApiKey: "${SEARXNG_API_KEY}"
+  scraperProvider: "firecrawl"
+  firecrawlApiUrl: "${FIRECRAWL_API_URL}"
+  firecrawlApiKey: "${FIRECRAWL_API_KEY}"
+  firecrawlVersion: "${FIRECRAWL_VERSION}"
+  rerankerType: "none"
+  scraperTimeout: 15000
+  safeSearch: 1
+  firecrawlOptions:
+    formats:
+      - markdown
+    onlyMainContent: true
+    blockAds: true
+    timeout: 15000
+
+endpoints:
+  custom:
+    - name: "vLLM Gemma"
+      apiKey: "${VLLM_API_KEY}"
+      baseURL: "http://vllm:8000/v1"
+      models:
+        default:
+          - "google/gemma-4-31B-it-qat-w4a16-ct"
+        fetch: false
+      titleConvo: true
+      titleModel: "google/gemma-4-31B-it-qat-w4a16-ct"
+      summarize: false
+      forcePrompt: false
+      modelDisplayLabel: "Gemma 4 31B QAT"
+
+      customParams:
+        defaultParamsEndpoint: "openAI"
+        paramDefinitions:
+          - key: "reasoning_effort"
+            default: "medium"
