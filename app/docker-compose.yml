@@ -33,6 +33,9 @@ services:
       - gemma4
       - --reasoning-parser
       - gemma4
+      - --chat-template
+      - examples/tool_chat_template_gemma4.jinja
+      - --async-scheduling
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
       HF_HOME: /root/.cache/huggingface

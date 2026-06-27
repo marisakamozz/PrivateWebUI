@@ -30,6 +30,8 @@ This document summarizes the purpose, rationale, tradeoffs, and validation point
 | `kv_cache_dtype` | `fp8` |
 | `limit_mm_per_prompt` | `{"image": 1, "audio": 0}` |
 | `speculative_config` | `{"method":"mtp","model":"google/gemma-4-31B-it-qat-q4_0-unquantized-assistant","num_speculative_tokens":4}` |
+| `chat_template` | `examples/tool_chat_template_gemma4.jinja` |
+| `async_scheduling` | enabled |
 | Attention backend | Auto-selected by vLLM; do not rely on `VLLM_ATTENTION_BACKEND=FLASHINFER` |
 | Web Search | SearXNG search provider, Firecrawl scraper provider, no reranker |
 
@@ -53,12 +55,14 @@ This document summarizes the purpose, rationale, tradeoffs, and validation point
 | `w4a16-ct` | The weight 4-bit / activation 16-bit compressed-tensors format is intended for native optimized vLLM inference. | Do not set `--quantization` unless detection fails; vLLM should read the model config's `quantization_config`. | vLLM engine args, LLM Compressor docs |
 | `mtp_assistant_model_id` | vLLM's Gemma 4 MTP path expects a Gemma 4 assistant checkpoint. Because the target model is 31B, the assistant checkpoint is also from the 31B family. | Treat it as `method=mtp`, not as a generic draft model. | vLLM MTP docs |
 | `--speculative-config.method=mtp` | Uses Gemma 4's native multi-token prediction capability through vLLM speculative decoding. | If startup logs show the assistant handled as `draft_model`, upgrade or change the vLLM image. | vLLM MTP docs |
-| `num_speculative_tokens=4` | vLLM documents small values such as `1` as a starting point; this profile raises the value to `4` for a more aggressive demo configuration. | It may not improve speed for every workload. If speed does not improve or memory pressure rises, reduce to `2`, then `1`. | vLLM MTP docs |
-| `max_model_len=131072` | The Gemma 4 31B model card advertises 256K context. `131072` keeps margin below that maximum and aligns with the MTP assistant's 131,072-token limit while still allowing long prompts. | On OOM, reduce to `98304` or `65536`. This is much more aggressive than a practical 32K starting point. | HF model card, vLLM engine args, Unsloth guide |
-| `gpu_memory_utilization=0.95` | Raises vLLM's model-executor memory fraction above the default `0.9` to prioritize KV cache capacity for long context. | Leaves less room for CUDA graphs, speculative decoding, long prefill, and image input. First reduce `max_model_len`, then roll back to `0.92`. | vLLM engine args |
+| `num_speculative_tokens=4` | vLLM's Gemma 4 recipe uses small MTP depths such as `4` in examples, and this profile keeps the existing MTP assistant checkpoint. | It may not improve speed for every workload. If speed does not improve or memory pressure rises, reduce to `2`, then `1`. | vLLM Gemma 4 recipe, vLLM MTP docs |
+| `max_model_len=131072` | The official Gemma 4 recipe often shows smaller launch values such as 16K or 32K, but this deployment keeps `131072` because it has worked in this stack and supports the intended long-context private demo. | On OOM, reduce to `98304` or `65536`. This remains more aggressive than the official recipe's typical examples. | HF model card, vLLM Gemma 4 recipe, vLLM engine args |
+| `gpu_memory_utilization=0.95` | The official Gemma 4 recipe lists `0.85-0.95` as the recommended range and uses `0.90` in full-featured examples. This deployment keeps `0.95` because it has worked with the current long-context profile. | Leaves less room for CUDA graphs, speculative decoding, long prefill, and image input. First reduce `max_model_len`, then roll back to `0.92` or `0.90`. | vLLM Gemma 4 recipe, vLLM engine args |
 | `max_num_seqs=1` | Prioritizes one long demo session over concurrent multi-user throughput, making memory and scheduling behavior easier to reason about. | Concurrent throughput drops. For multi-user demos, compare `2` with `max_model_len=65536`. | vLLM scheduling behavior |
 | `kv_cache_dtype=fp8` | KV cache memory strongly scales with context length and concurrency, so FP8 is a major memory-saving lever on a 44 GiB GPU. | May affect quality or stability. Compare with `auto` only if the context length can be reduced substantially. | vLLM engine args |
 | `limit_mm_per_prompt={"image":1,"audio":0}` | Gemma 4 31B supports image-text-to-text. Allow one image for multimodal demos and explicitly disable audio, which is not the main target for the 31B model. | Image input increases memory footprint. Use `image:0` if text-only stability is more important. | Google QAT announcement, vLLM engine args, HF model card |
+| `--chat-template=examples/tool_chat_template_gemma4.jinja` | vLLM's Gemma 4 recipe recommends the Gemma 4 tool chat template for reasoning and tool calling with vLLM. | If the Docker image changes and the relative `examples/` path is missing, mount or copy the template explicitly. | vLLM Gemma 4 recipe |
+| `--async-scheduling` | vLLM's Gemma 4 recipe recommends async scheduling for throughput by overlapping scheduling with decoding. | Disable only if the selected vLLM image reports an incompatibility at startup. | vLLM Gemma 4 recipe |
 | Attention backend auto | vLLM should choose the actual attention backend. `VLLM_ATTENTION_BACKEND=FLASHINFER` is not relied on here, and Gemma 4 may force TRITON_ATTN because of heterogeneous head dimensions. | If an attention backend is specified later, use a supported vLLM option and verify the effective backend in startup logs. | vLLM runtime behavior |
 | `vllm_image=vllm/vllm-openai:v0.22.1` | Pinning avoids behavior changes from `latest`. Gemma 4 QAT/MTP depends on relatively new vLLM functionality. | If issues appear, switch to a Gemma 4-specific tag or nightly image. | vLLM Gemma 4 recipe |
 | LibreChat Web Search | `SearXNG + Firecrawl + reranker none` keeps Web Search self-hosted and follows LibreChat's search-provider / scraper / reranker structure. SearXNG JSON output is enabled in `app/searxng-settings.yml`. | Without a reranker, result ordering depends more heavily on the search provider and scraper output. Add a reranker only after the base self-hosted path is stable. | LibreChat Web Search docs, local SearXNG settings |
@@ -80,6 +84,8 @@ This document summarizes the purpose, rationale, tradeoffs, and validation point
 | Model load | `google/gemma-4-31B-it-qat-w4a16-ct` is loaded as a compressed-tensors model |
 | Speculative config | Startup logs show `method='mtp'` |
 | Assistant handling | The assistant checkpoint is not treated as a generic draft model |
+| Chat template | Startup succeeds with `examples/tool_chat_template_gemma4.jinja`, or the template is mounted explicitly if the image path is missing |
+| Async scheduling | Startup logs accept `--async-scheduling` without incompatibility warnings |
 | Memory | No OOM appears during startup or generation |
 | KV cache | Startup logs show KV cache capacity and maximum concurrency |
 | Model API | `/v1/models` includes `google/gemma-4-31B-it-qat-w4a16-ct` |
